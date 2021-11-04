@@ -1,12 +1,31 @@
+use std::io::{Read, Result, Seek, SeekFrom};
 use std::mem;
-use std::io::{Read, Result};
+
+enum Position {
+    FrontBuffer(usize),
+    BackBuffer(usize),
+}
 
 /// A reader adapter that allows to seek a little bit
+///
+/// The PreservingReader will wrap around a Read instance and can be read normally.
+/// The core feature is to provide `Seek`, even if the underlying Reader does not.
+/// It achieves this by holding a cache of the read data, which can be read again.
+///
+///
+/// ```
+/// fn onebyte_buffer_readthrough() {
+///     let source = vec![1, 2, 3, 4, 5];
+///     let reader = PreservingReader::new(source.as_slice(), 1);
+///     let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
+///     assert_eq!(&source, &bytes);
+/// }
+/// ```
 pub struct PreservingReader<R: Read> {
     pub inner: R,
     current_buffer: Vec<u8>,
     older_buffer: Vec<u8>,
-    pos: usize,
+    pos: Position,
     /// Bytes read from `inner`
     read_bytes: usize,
 }
@@ -24,12 +43,12 @@ impl<R: Read> PreservingReader<R> {
             inner,
             current_buffer: Vec::with_capacity(keep_size),
             older_buffer: Vec::with_capacity(keep_size),
-            pos: 0,
+            pos: Position::FrontBuffer(0),
             read_bytes: 0,
         }
     }
 
-    // Returns the number of bytes which can be read before the next buffer swap.
+    // Returns the number of bytes which can be read from inner before the next buffer swap.
     fn remaining_current_buffer_capacity(&self) -> usize {
         self.current_buffer.capacity() - self.current_buffer.len()
     }
@@ -44,7 +63,8 @@ impl<R: Read> PreservingReader<R> {
     fn read_inner(&mut self, buf: &mut [u8]) -> Result<usize> {
         let read_bytes = self.inner.read(buf)?;
         if read_bytes >= self.remaining_current_buffer_capacity() {
-            self.current_buffer.extend_from_slice(&buf[..self.remaining_current_buffer_capacity()]);
+            self.current_buffer
+                .extend_from_slice(&buf[..self.remaining_current_buffer_capacity()]);
             self.older_buffer.clear();
             mem::swap(&mut self.current_buffer, &mut self.older_buffer);
             self.pos = 0;
@@ -57,8 +77,30 @@ impl<R: Read> PreservingReader<R> {
 }
 
 impl<R: Read> Read for PreservingReader<R> {
+    /// Read something from this source and write it into buffer, returning how many bytes were read.
+    ///
+    /// `read` will never read more than `buf.len()` from the underlying reader. But it may have read less
+    /// than it returns, in case the user seeked backwards before.
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if self.pos < self.current_buffer.len() {
+        // First, handle the older buffer / back buffer, if needed
+        let front_pos = match self.pos {
+            Position::FrontBuffer(pos) => pos,
+            Position::BackBuffer(pos) => {
+                let remaining_backbuffer = &self.older_buffer[pos..];
+                if buf.len() < remaining_backbuffer.len() {
+                    buf.copy_from_slice(remaining_backbuffer[..buf.len()]);
+                    self.pos = Position::BackBuffer(pos + buf.len());
+                } else {
+                    let (backbuffer_cached, remainder) =
+                        buf.split_at_mut(remaining_backbuffer.len());
+                    backbuffer_cached.copy_from_slice(remaining_backbuffer);
+                    self.pos = Position::FrontBuffer(0);
+                    0
+                }
+            }
+        };
+        // Now, we can read the rest (which may involve the front buffer)
+        if front_pos < self.current_buffer.len() {
             let buffer_remainder = &self.current_buffer[self.pos..];
             let (cached_answer, new_read) = buf.split_at_mut(buffer_remainder.len());
             cached_answer.copy_from_slice(&buffer_remainder);
@@ -71,9 +113,11 @@ impl<R: Read> Read for PreservingReader<R> {
     }
 }
 
-//impl<R: Read> Seek for PreservingReader<R> {
-  //  fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
-        
+// impl<R: Read> Seek for PreservingReader<R> {
+//     fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+//         ;
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
