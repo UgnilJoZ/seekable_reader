@@ -15,8 +15,10 @@ enum Position {
 ///
 ///
 /// ```
+/// use std::io::Read;
+/// use seekable_reader::PreservingReader;
+/// 
 /// fn onebyte_buffer_readthrough() {
-///     dbg!("Hallo Welt!");
 ///     let source = vec![1, 2, 3, 4, 5];
 ///     let reader = PreservingReader::new(source.as_slice(), 1);
 ///     let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
@@ -25,6 +27,7 @@ enum Position {
 /// ```
 pub struct PreservingReader<R: Read> {
     pub inner: R,
+    keep_size: usize,
     current_buffer: Vec<u8>,
     older_buffer: Vec<u8>,
     pos: Position,
@@ -44,6 +47,7 @@ impl<R: Read> PreservingReader<R> {
     pub fn new(inner: R, keep_size: usize) -> PreservingReader<R> {
         PreservingReader {
             inner,
+            keep_size,
             current_buffer: Vec::with_capacity(keep_size),
             older_buffer: Vec::with_capacity(keep_size),
             pos: Position::FrontBuffer(0),
@@ -54,7 +58,7 @@ impl<R: Read> PreservingReader<R> {
 
     // Returns the number of bytes which can be read from inner before the next buffer swap.
     fn remaining_current_buffer_capacity(&self) -> usize {
-        self.current_buffer.capacity() - self.current_buffer.len()
+        self.keep_size - self.current_buffer.len()
     }
 
     /// Returns the size of the buffered data.
@@ -64,21 +68,40 @@ impl<R: Read> PreservingReader<R> {
     }
 
     /// Reads more data from `inner` into `buf` and puts them into the cache
+    /// 
+    /// After this operation, the stream position will be at the end of all read data.
+    /// 
+    /// If buf is long enough, the caches will be flushed.
     fn read_inner(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let mut buf = buf;
+        dbg!(&self.older_buffer, &self.current_buffer);
+        let buf = dbg!(buf);
         let read_bytes = self.inner.read(buf)?;
-        let to_cache_bytes = read_bytes;
-        while to_cache_bytes >= self.remaining_current_buffer_capacity() {
-            self.current_buffer
-                .extend_from_slice(&buf[..self.remaining_current_buffer_capacity()]);
-            buf = &mut buf[self.remaining_current_buffer_capacity()..];
-            self.older_buffer.clear();
-            self.buffer_begins_at_pos += self.older_buffer.capacity();
-            mem::swap(&mut self.current_buffer, &mut self.older_buffer);
-            self.pos = Position::FrontBuffer(0);
+        let cache_capacity = 2 * self.keep_size;
+        if read_bytes >= cache_capacity {
+            // Flush cache and read everything out of the buffer
+            let skip = cache_capacity * (read_bytes % cache_capacity);
+            let (to_older, to_current) = (&buf[skip..]).split_at(self.keep_size);
+            self.older_buffer.resize(self.keep_size, 0);
+            self.older_buffer.as_mut_slice().copy_from_slice(to_older);
+            self.current_buffer.resize(to_current.len(), 0);
+            self.current_buffer.copy_from_slice(to_current);
+        } else if read_bytes >= self.remaining_current_buffer_capacity() {
+            println!("Will swap buffers now.");
+            std::mem::swap(&mut self.older_buffer, &mut self.current_buffer);
+            let (to_older, to_current) = buf.split_at(self.remaining_current_buffer_capacity());
+            self.older_buffer.extend_from_slice(to_older);
+            self.current_buffer.clear();
+            self.current_buffer.extend_from_slice(to_current);
+            if to_current.len() == self.keep_size {
+                println!("Will swap buffers again.");
+                std::mem::swap(&mut self.older_buffer, &mut self.current_buffer);
+                self.current_buffer.clear();
+            }
+            dbg!(to_older, to_current);
+            dbg!(&self.older_buffer, &self.current_buffer);
+        } else {
+            self.current_buffer.extend_from_slice(buf);
         }
-        self.current_buffer.extend_from_slice(&buf);
-        self.read_bytes += read_bytes;
         Ok(read_bytes)
     }
 
@@ -145,35 +168,28 @@ impl<R: Read> Read for PreservingReader<R> {
     /// than it returns, in case the user seeked backwards before.
     /// ToDo Rewrite
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        // First, handle the older buffer / back buffer, if needed
-        let front_pos = match self.pos {
-            Position::FrontBuffer(pos) => pos,
-            Position::BackBuffer(pos) => {
-                let remaining_backbuffer = &self.older_buffer[pos..];
-                if buf.len() < remaining_backbuffer.len() {
-                    buf.copy_from_slice(&remaining_backbuffer[..buf.len()]);
-                    self.pos = Position::BackBuffer(pos + buf.len());
-                    return Ok(buf.len())
+        match self.pos {
+            Position::FrontBuffer(pos) => {
+                dbg!(&self.older_buffer, &self.current_buffer);
+                dbg!(pos, self.current_buffer.len());
+                let cached = &self.current_buffer[pos..];
+                let (from_cache, from_inner) = buf.split_at_mut(min(cached.len(), buf.len()));
+                dbg!(&from_cache, &from_inner);
+                from_cache.copy_from_slice(&cached[..from_cache.len()]);
+                self.pos = Position::FrontBuffer(pos + from_cache.len());
+                if from_inner.len() > 0 {
+                    Ok(cached.len() + self.read_inner(from_inner)?)
                 } else {
-                    let (backbuffer_cached, remainder) =
-                        buf.split_at_mut(remaining_backbuffer.len());
-                    backbuffer_cached.copy_from_slice(&remaining_backbuffer);
-                    self.pos = Position::FrontBuffer(0);
-                    0
+                    Ok(cached.len())
                 }
             }
-        };
-        // Now, we can read the rest (which may involve the front buffer)
-        if front_pos < self.current_buffer.len() {
-            let buffer_remainder = &self.current_buffer[front_pos..];
-            let (cached_answer, new_read) = buf.split_at_mut(buffer_remainder.len());
-            dbg!("Will copy {} bytes from cache", buffer_remainder.len());
-            cached_answer.copy_from_slice(&buffer_remainder);
-            let newly_read = self.read_inner(new_read)?;
-            self.pos = Position::FrontBuffer(self.current_buffer.len());
-            Ok(cached_answer.len() + newly_read)
-        } else {
-            self.read_inner(buf)
+            Position::BackBuffer(pos) => {
+                let cached = &self.older_buffer[pos..];
+                let (from_cache, other) = buf.split_at_mut(cached.len());
+                from_cache.copy_from_slice(cached);
+                self.pos = Position::FrontBuffer(0);
+                Ok(cached.len() + self.read(other)?)
+            }
         }
     }
 }
@@ -200,8 +216,13 @@ mod tests {
     fn onebyte_buffer_readthrough() {
         dbg!("Hallo Welt!");
         let source = vec![1, 2, 3, 4, 5];
-        let reader = PreservingReader::new(source.as_slice(), 1);
-        let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
-        assert_eq!(&source, &bytes);
+        let mut reader = PreservingReader::new(source.as_slice(), 1);
+        let mut buffer = [0; 1];
+        let mut dest = vec!();
+        while reader.read(&mut buffer).unwrap() != 0 {
+            dbg!(buffer[0]);
+            dest.push(buffer[0]);
+            println!("\n");
+        }
     }
 }
