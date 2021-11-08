@@ -2,6 +2,7 @@ use core::cmp::min;
 use std::io::{Read, Result, Seek, SeekFrom};
 use std::mem;
 
+#[derive(Debug)]
 enum Position {
     FrontBuffer(usize),
     BackBuffer(usize),
@@ -28,6 +29,7 @@ enum Position {
 pub struct PreservingReader<R: Read> {
     pub inner: R,
     keep_size: usize,
+    // TODO migrate to arrayvec
     current_buffer: Vec<u8>,
     older_buffer: Vec<u8>,
     pos: Position,
@@ -58,6 +60,7 @@ impl<R: Read> PreservingReader<R> {
 
     // Returns the number of bytes which can be read from inner before the next buffer swap.
     fn remaining_current_buffer_capacity(&self) -> usize {
+        dbg!(self.keep_size, self.current_buffer.len());
         self.keep_size - self.current_buffer.len()
     }
 
@@ -89,8 +92,8 @@ impl<R: Read> PreservingReader<R> {
             mem::swap(&mut self.older_buffer, &mut self.current_buffer);
             let (to_older, to_current) = buf.split_at(self.remaining_current_buffer_capacity());
             self.older_buffer.extend_from_slice(to_older);
-            self.current_buffer.clear();
-            self.current_buffer.extend_from_slice(to_current);
+            self.current_buffer.resize(to_current.len(), 0);
+            self.current_buffer.copy_from_slice(to_current);
         } else {
             self.current_buffer.extend_from_slice(buf);
         }
@@ -122,7 +125,7 @@ impl<R: Read> PreservingReader<R> {
         }
         
         if let Position::BackBuffer(pos) = self.pos {
-            let shift = min(shift, self.older_buffer.len());
+            let shift = min(shift, pos);
             let newpos = self.buffer_begins_at_pos + pos - shift;
             self.pos = Position::BackBuffer(newpos);
         }
@@ -180,10 +183,16 @@ impl<R: Read> Read for PreservingReader<R> {
             }
             Position::BackBuffer(pos) => {
                 let cached = &self.older_buffer[pos..];
+                let cached = &cached[..min(cached.len(), buf.len())];
                 let (from_cache, other) = buf.split_at_mut(cached.len());
                 from_cache.copy_from_slice(cached);
-                self.pos = Position::FrontBuffer(0);
-                Ok(cached.len() + self.read(other)?)
+                if other.len() > 0 {
+                    self.pos = Position::FrontBuffer(0);
+                    Ok(cached.len() + self.read(other)?)
+                } else {
+                    self.pos = Position::BackBuffer(pos + cached.len());
+                    Ok(cached.len())
+                }
             }
         }
     }
@@ -239,5 +248,44 @@ mod tests {
         reader.read(&mut dest).unwrap();
         assert_eq!(reader.older_buffer.len(), 5);
         assert_eq!(reader.current_buffer.len(), 0);
+    }
+
+    #[test]
+    fn seek_small_reserve() {
+        let source = vec![1, 2, 3, 4, 5];
+        let mut reader = PreservingReader::new(source.as_slice(), 1);
+        let mut dest = vec![];
+        let mut buffer = [0; 1];
+        reader.read(&mut buffer).unwrap();
+        dest.push(buffer[0]);
+        reader.seek_backwards(1).unwrap();
+        reader.read(&mut buffer).unwrap();
+        dest.push(buffer[0]);
+        reader.seek_forwards(1).unwrap();
+        reader.read(&mut buffer).unwrap();
+        dest.push(buffer[0]);
+        assert_eq!(dest, [1,1,3]);
+    }
+
+    #[test]
+    fn seek_2bytes_reserve() {
+        let source = vec![1, 2, 3, 4, 5];
+        let mut reader = PreservingReader::new(source.as_slice(), 2);
+        let mut dest = vec![];
+        let mut buffer = [0; 1];
+        reader.read(&mut buffer).unwrap();
+        dest.push(buffer[0]);
+        reader.read(&mut buffer).unwrap();
+        dest.push(buffer[0]);
+        reader.seek_backwards(2).unwrap();
+        reader.read(&mut buffer).unwrap();
+        dest.push(buffer[0]);
+        reader.seek_forwards(2).unwrap();
+        reader.read(&mut buffer).unwrap();
+        dest.push(buffer[0]);
+        reader.seek_backwards(1).unwrap();
+        reader.read(&mut buffer).unwrap();
+        dest.push(buffer[0]);
+        assert_eq!(dest, [1,2,1,4, 4]);
     }
 }
