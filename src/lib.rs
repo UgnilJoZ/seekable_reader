@@ -13,22 +13,9 @@ enum Position {
 /// The PreservingReader will wrap around a Read instance and can be read normally.
 /// The core feature is to provide `Seek`, even if the underlying Reader does not.
 /// It achieves this by holding a cache of the read data, which can be read again.
-///
-///
-/// ```
-/// use std::io::Read;
-/// use seekable_reader::PreservingReader;
-/// 
-/// fn onebyte_buffer_readthrough() {
-///     let source = vec![1, 2, 3, 4, 5];
-///     let reader = PreservingReader::new(source.as_slice(), 1);
-///     let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
-///     assert_eq!(&source, &bytes);
-/// }
-/// ```
 pub struct PreservingReader<R: Read> {
     pub inner: R,
-    keep_size: usize,
+    pub keep_size: usize,
     // TODO migrate to arrayvec
     current_buffer: Vec<u8>,
     older_buffer: Vec<u8>,
@@ -162,12 +149,23 @@ impl<R: Read> PreservingReader<R> {
     }
 }
 
+/// A PreservingReader can be read just normally:
+///  ```
+/// use std::io::Read;
+/// use seekable_reader::PreservingReader;
+/// 
+/// fn onebyte_buffer_readthrough() {
+///     let source = vec![1, 2, 3, 4, 5];
+///     let reader = PreservingReader::new(source.as_slice(), 1);
+///     let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
+///     assert_eq!(&source, &bytes);
+/// }
+/// ```
 impl<R: Read> Read for PreservingReader<R> {
     /// Read something from this source and write it into buffer, returning how many bytes were read.
     ///
     /// `read` will never read more than `buf.len()` from the underlying reader. But it may have read less
-    /// than it returns, in case the user seeked backwards before.
-    /// ToDo Rewrite
+    /// than it returns, in case the user seeked backwards before, causing the cache to be used.
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         match self.pos {
             Position::FrontBuffer(pos) => {
@@ -286,6 +284,6 @@ mod tests {
         reader.seek_backwards(1).unwrap();
         reader.read(&mut buffer).unwrap();
         dest.push(buffer[0]);
-        assert_eq!(dest, [1,2,1,4, 4]);
+        assert_eq!(dest, [1,2,1,4,4]);
     }
 }
