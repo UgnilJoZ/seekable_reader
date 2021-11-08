@@ -212,7 +212,7 @@ impl<R: Read> Read for PreservingReader<R> {
 #[cfg(test)]
 mod tests {
     use crate::PreservingReader;
-    use std::io::Read;
+    use std::io::{Read, Seek, SeekFrom};
 
     #[test]
     fn readthrough_1byte_reserve() {
@@ -285,5 +285,25 @@ mod tests {
         reader.read(&mut buffer).unwrap();
         dest.push(buffer[0]);
         assert_eq!(dest, [1,2,1,4,4]);
+    }
+
+    #[test]
+    fn bigger_test() {
+        let source: Vec<u8> = (0..1536).map(|n| (n % 256) as u8).collect();
+        let mut reader = PreservingReader::new(source.as_slice(), 1024);
+        let mut buffer = [0; 1536];
+        reader.read(&mut buffer).unwrap();
+        assert_eq!(source.len(), buffer.len());
+        assert_eq!(source, buffer);
+        reader.seek(SeekFrom::Start(0)).unwrap();
+        reader.read(&mut buffer).unwrap();
+        assert_eq!(source, buffer);
+        reader.seek(SeekFrom::Current(-1024)).unwrap();
+        reader.seek(SeekFrom::Current(-512)).unwrap();
+        reader.read(&mut buffer).unwrap();
+        assert_eq!(source, buffer);
+        reader.seek(SeekFrom::End(-1536)).unwrap();
+        reader.read(&mut buffer).unwrap();
+        assert_eq!(source, buffer);
     }
 }
