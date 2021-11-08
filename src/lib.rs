@@ -75,7 +75,6 @@ impl<R: Read> PreservingReader<R> {
             self.current_buffer.resize(to_current.len(), 0);
             self.current_buffer.copy_from_slice(to_current);
         } else if read_bytes > self.remaining_current_buffer_capacity() {
-            println!("Will swap buffers now.");
             mem::swap(&mut self.older_buffer, &mut self.current_buffer);
             let (to_older, to_current) = buf.split_at(self.remaining_current_buffer_capacity());
             self.older_buffer.extend_from_slice(to_older);
