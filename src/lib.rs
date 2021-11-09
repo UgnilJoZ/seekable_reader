@@ -92,7 +92,7 @@ impl<R: Read> PreservingReader<R> {
         Ok(read_bytes)
     }
 
-    fn get_stream_position(&self) -> usize {
+    pub fn get_stream_position(&self) -> usize {
         match self.pos {
             Position::FrontBuffer(pos) => self.buffer_begins_at_pos + self.older_buffer.len() + pos,
             Position::BackBuffer(pos) => self.buffer_begins_at_pos + pos,
@@ -173,9 +173,9 @@ impl<R: Read> Read for PreservingReader<R> {
                 from_cache.copy_from_slice(&cached[..from_cache.len()]);
                 self.pos = Position::FrontBuffer(pos + from_cache.len());
                 if from_inner.len() > 0 {
-                    Ok(cached.len() + self.read_inner(from_inner)?)
+                    Ok(from_cache.len() + self.read_inner(from_inner)?)
                 } else {
-                    Ok(cached.len())
+                    Ok(from_cache.len())
                 }
             }
             Position::BackBuffer(pos) => {
@@ -185,10 +185,10 @@ impl<R: Read> Read for PreservingReader<R> {
                 from_cache.copy_from_slice(cached);
                 if other.len() > 0 {
                     self.pos = Position::FrontBuffer(0);
-                    Ok(cached.len() + self.read(other)?)
+                    Ok(from_cache.len() + self.read(other)?)
                 } else {
                     self.pos = Position::BackBuffer(pos + cached.len());
-                    Ok(cached.len())
+                    Ok(from_cache.len())
                 }
             }
         }
@@ -304,5 +304,13 @@ mod tests {
         reader.seek(SeekFrom::End(-1536)).unwrap();
         reader.read(&mut buffer).unwrap();
         assert_eq!(source, buffer);
+    }
+
+    #[test]
+    fn small_result_test() {
+        let source: Vec<u8> = (0..1536).map(|n| (n % 256) as u8).collect();
+        let mut reader = PreservingReader::new(source.as_slice(), 2048);
+        let mut buf = [0; 27];
+        assert_eq!(reader.read(&mut buf).unwrap(), 27);
     }
 }
