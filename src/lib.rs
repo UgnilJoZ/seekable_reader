@@ -65,7 +65,7 @@ impl<R: Read> PreservingReader<R> {
         let buf = buf;
         let read_bytes = self.inner.read(buf)?;
         let cache_capacity = 2 * self.keep_size;
-        if read_bytes >= cache_capacity {
+        if read_bytes >= cache_capacity - self.current_buffer.len() {
             // Flush cache and read everything out of the buffer
             let skip = cache_capacity * (read_bytes % cache_capacity);
             let (to_older, to_current) = (&buf[skip..]).split_at(min(self.keep_size, buf.len() - skip));
@@ -74,8 +74,9 @@ impl<R: Read> PreservingReader<R> {
             self.current_buffer.resize(to_current.len(), 0);
             self.current_buffer.copy_from_slice(to_current);
         } else if read_bytes > self.remaining_current_buffer_capacity() {
+            let to_older_size = self.remaining_current_buffer_capacity();
             mem::swap(&mut self.older_buffer, &mut self.current_buffer);
-            let (to_older, to_current) = buf.split_at(min(self.remaining_current_buffer_capacity(), buf.len()));
+            let (to_older, to_current) = buf.split_at(min(to_older_size, buf.len()));
             self.older_buffer.extend_from_slice(to_older);
             self.current_buffer.resize(to_current.len(), 0);
             self.current_buffer.copy_from_slice(to_current);
