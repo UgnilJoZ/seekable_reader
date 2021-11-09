@@ -47,7 +47,6 @@ impl<R: Read> PreservingReader<R> {
 
     // Returns the number of bytes which can be read from inner before the next buffer swap.
     fn remaining_current_buffer_capacity(&self) -> usize {
-        dbg!(self.keep_size, self.current_buffer.len());
         self.keep_size - self.current_buffer.len()
     }
 
@@ -84,7 +83,6 @@ impl<R: Read> PreservingReader<R> {
             self.current_buffer.extend_from_slice(buf);
         }
         if self.current_buffer.len() == self.keep_size {
-            println!("Will swap buffers again.");
             mem::swap(&mut self.older_buffer, &mut self.current_buffer);
             self.current_buffer.clear();
         }
