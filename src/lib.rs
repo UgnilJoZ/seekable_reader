@@ -10,10 +10,10 @@ enum Position {
 
 /// A reader adapter that allows to seek a little bit
 ///
-/// The PreservingReader will wrap around a Read instance and can be read normally.
+/// The SeekableReader will wrap around a Read instance and can be read normally.
 /// The core feature is to provide `Seek`, even if the underlying Reader does not.
 /// It achieves this by holding a cache of the read data, which can be read again.
-pub struct PreservingReader<R: Read> {
+pub struct SeekableReader<R: Read> {
     pub inner: R,
     pub keep_size: usize,
     // TODO migrate to arrayvec
@@ -25,16 +25,16 @@ pub struct PreservingReader<R: Read> {
     buffer_begins_at_pos: usize,
 }
 
-impl<R: Read> PreservingReader<R> {
-    /// Create a new instance of a PreservingReader.
+impl<R: Read> SeekableReader<R> {
+    /// Create a new instance of a SeekableReader.
     ///
     /// It wraps around `inner` and allows seeking backwards by
     /// keeping at least `keep_size` bytes of already read data,
     /// if this amount of data is already read.
     ///
     /// At most, `2 * keep_size` bytes are kept.
-    pub fn new(inner: R, keep_size: usize) -> PreservingReader<R> {
-        PreservingReader {
+    pub fn new(inner: R, keep_size: usize) -> SeekableReader<R> {
+        SeekableReader {
             inner,
             keep_size,
             current_buffer: Vec::with_capacity(keep_size),
@@ -147,19 +147,19 @@ impl<R: Read> PreservingReader<R> {
     }
 }
 
-/// A PreservingReader can be read just normally:
+/// A SeekableReader can be read just normally:
 ///  ```
 /// use std::io::Read;
-/// use seekable_reader::PreservingReader;
+/// use seekable_reader::SeekableReader;
 /// 
 /// fn onebyte_buffer_readthrough() {
 ///     let source = vec![1, 2, 3, 4, 5];
-///     let reader = PreservingReader::new(source.as_slice(), 1);
+///     let reader = SeekableReader::new(source.as_slice(), 1);
 ///     let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
 ///     assert_eq!(&source, &bytes);
 /// }
 /// ```
-impl<R: Read> Read for PreservingReader<R> {
+impl<R: Read> Read for SeekableReader<R> {
     /// Read something from this source and write it into buffer, returning how many bytes were read.
     ///
     /// `read` will never read more than `buf.len()` from the underlying reader. But it may have read less
@@ -194,7 +194,7 @@ impl<R: Read> Read for PreservingReader<R> {
     }
 }
 
- impl<R: Read> Seek for PreservingReader<R> {
+ impl<R: Read> Seek for SeekableReader<R> {
      fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
          let old_position = self.get_stream_position();
          match pos {
@@ -209,13 +209,13 @@ impl<R: Read> Read for PreservingReader<R> {
 
 #[cfg(test)]
 mod tests {
-    use crate::PreservingReader;
+    use crate::SeekableReader;
     use std::io::{Read, Seek, SeekFrom};
 
     #[test]
     fn readthrough_1byte_reserve() {
         let source = vec![1, 2, 3, 4, 5];
-        let mut reader = PreservingReader::new(source.as_slice(), 1);
+        let mut reader = SeekableReader::new(source.as_slice(), 1);
         let mut buffer = [0; 1];
         let mut dest = vec!();
         while reader.read(&mut buffer).unwrap() != 0 {
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn readthrough_2byte_reserve() {
         let source = vec![1, 2, 3, 4, 5];
-        let mut reader = PreservingReader::new(source.as_slice(), 2);
+        let mut reader = SeekableReader::new(source.as_slice(), 2);
         let mut buffer = [0; 1];
         let mut dest = vec!();
         while reader.read(&mut buffer).unwrap() != 0 {
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn readall_5byte() {
         let source = vec![1, 2, 3, 4, 5];
-        let mut reader = PreservingReader::new(source.as_slice(), 5);
+        let mut reader = SeekableReader::new(source.as_slice(), 5);
         let mut dest = [0; 5];
         reader.read(&mut dest).unwrap();
         assert_eq!(reader.older_buffer.len(), 5);
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn seek_small_reserve() {
         let source = vec![1, 2, 3, 4, 5];
-        let mut reader = PreservingReader::new(source.as_slice(), 1);
+        let mut reader = SeekableReader::new(source.as_slice(), 1);
         let mut dest = vec![];
         let mut buffer = [0; 1];
         reader.read(&mut buffer).unwrap();
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn seek_2bytes_reserve() {
         let source = vec![1, 2, 3, 4, 5];
-        let mut reader = PreservingReader::new(source.as_slice(), 2);
+        let mut reader = SeekableReader::new(source.as_slice(), 2);
         let mut dest = vec![];
         let mut buffer = [0; 1];
         reader.read(&mut buffer).unwrap();
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn bigger_test() {
         let source: Vec<u8> = (0..1536).map(|n| (n % 256) as u8).collect();
-        let mut reader = PreservingReader::new(source.as_slice(), 1024);
+        let mut reader = SeekableReader::new(source.as_slice(), 1024);
         let mut buffer = [0; 1536];
         reader.read(&mut buffer).unwrap();
         assert_eq!(source.len(), buffer.len());
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn small_result_test() {
         let source: Vec<u8> = (0..1536).map(|n| (n % 256) as u8).collect();
-        let mut reader = PreservingReader::new(source.as_slice(), 2048);
+        let mut reader = SeekableReader::new(source.as_slice(), 2048);
         let mut buf = [0; 27];
         assert_eq!(reader.read(&mut buf).unwrap(), 27);
     }
