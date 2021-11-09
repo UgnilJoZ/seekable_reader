@@ -2,5 +2,10 @@
 name = "seekable_reader"
 version = "0.1.0"
 edition = "2018"
+authors = ["Jan Ole Zabel <joz@spline.de>"]
+license = "MIT OR Apache-2.0"
+documentation = "http://docs.rs/seekable_reader"
+repository = "https://github.com/UgnilJoZ/seekable_reader"
+description = "Seek implementation for every Read"
 
 [dependencies]
