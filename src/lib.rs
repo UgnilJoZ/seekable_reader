@@ -69,14 +69,14 @@ impl<R: Read> PreservingReader<R> {
         if read_bytes >= cache_capacity {
             // Flush cache and read everything out of the buffer
             let skip = cache_capacity * (read_bytes % cache_capacity);
-            let (to_older, to_current) = (&buf[skip..]).split_at(self.keep_size);
+            let (to_older, to_current) = (&buf[skip..]).split_at(min(self.keep_size, buf.len() - skip));
             self.older_buffer.resize(self.keep_size, 0);
             self.older_buffer.as_mut_slice().copy_from_slice(to_older);
             self.current_buffer.resize(to_current.len(), 0);
             self.current_buffer.copy_from_slice(to_current);
         } else if read_bytes > self.remaining_current_buffer_capacity() {
             mem::swap(&mut self.older_buffer, &mut self.current_buffer);
-            let (to_older, to_current) = buf.split_at(self.remaining_current_buffer_capacity());
+            let (to_older, to_current) = buf.split_at(min(self.remaining_current_buffer_capacity(), buf.len()));
             self.older_buffer.extend_from_slice(to_older);
             self.current_buffer.resize(to_current.len(), 0);
             self.current_buffer.copy_from_slice(to_current);
@@ -181,7 +181,7 @@ impl<R: Read> Read for PreservingReader<R> {
             Position::BackBuffer(pos) => {
                 let cached = &self.older_buffer[pos..];
                 let cached = &cached[..min(cached.len(), buf.len())];
-                let (from_cache, other) = buf.split_at_mut(cached.len());
+                let (from_cache, other) = buf.split_at_mut(min(cached.len(), buf.len()));
                 from_cache.copy_from_slice(cached);
                 if other.len() > 0 {
                     self.pos = Position::FrontBuffer(0);
