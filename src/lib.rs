@@ -80,8 +80,8 @@ impl<R: Read> SeekableReader<R> {
     /// 
     /// If buf is long enough, the caches will be flushed.
     fn read_inner(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let buf = buf;
         let read_bytes = self.inner.read(buf)?;
+        let buf = &mut buf[..read_bytes];
         let cache_capacity = 2 * self.keep_size;
         if read_bytes >= cache_capacity - self.current_buffer.len() {
             // Flush cache and read everything out of the buffer
