@@ -1,3 +1,21 @@
+///
+/// This crate introduces the **SeekableReader**, which provides `Seek` if wrapped around a `Read` instance.
+/// 
+/// An example:
+///  ```
+/// use std::io::{Read, Seek, SeekFrom};
+/// use seekable_reader::SeekableReader;
+/// 
+/// let source = vec![1, 2, 3, 4, 5];
+/// let mut reader = SeekableReader::new(source.as_slice(), 1);
+/// let mut buffer = vec![0; 5];
+/// // Read one byte and seek back
+/// reader.read(&mut buffer[..1]).unwrap();
+/// reader.seek(SeekFrom::Start(0)).unwrap();
+/// let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
+/// assert_eq!(&source, &bytes);
+/// ```
+
 use core::cmp::min;
 use std::io::{Read, Result, Seek, SeekFrom};
 use std::mem;
@@ -152,12 +170,10 @@ impl<R: Read> SeekableReader<R> {
 /// use std::io::Read;
 /// use seekable_reader::SeekableReader;
 /// 
-/// fn onebyte_buffer_readthrough() {
-///     let source = vec![1, 2, 3, 4, 5];
-///     let reader = SeekableReader::new(source.as_slice(), 1);
-///     let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
-///     assert_eq!(&source, &bytes);
-/// }
+/// let source = vec![1, 2, 3, 4, 5];
+/// let reader = SeekableReader::new(source.as_slice(), 1);
+/// let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
+/// assert_eq!(&source, &bytes);
 /// ```
 impl<R: Read> Read for SeekableReader<R> {
     /// Read something from this source and write it into buffer, returning how many bytes were read.
