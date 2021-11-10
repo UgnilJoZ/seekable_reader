@@ -12,6 +12,7 @@
 /// // Read one byte and seek back
 /// reader.read(&mut buffer[..1]).unwrap();
 /// reader.seek(SeekFrom::Start(0)).unwrap();
+/// // First byte can be read again!
 /// let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
 /// assert_eq!(&source, &bytes);
 /// ```
