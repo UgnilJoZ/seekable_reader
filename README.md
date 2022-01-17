@@ -1,5 +1,5 @@
 [![Crates.io](https://img.shields.io/crates/v/seekable_reader.svg)](https://crates.io/crates/seekable_reader)
-[![Documentation](https://docs.rs/seekable_reader/badge.svg)](https://docs.rs/crate/seekable_reader/)
+[![Documentation](https://docs.rs/seekable_reader/badge.svg)](https://docs.rs/seekable_reader/latest/seekable_reader/struct.SeekableReader.html)
 [![Dependency Status](https://deps.rs/crate/seekable_reader/0.1.2/status.svg)](https://deps.rs/crate/seekable_reader/0.1.2)
 
 # seekable_reader
