@@ -1,7 +1,6 @@
-/// Real world example of seek and read operations obtained through an observer and rodio-rs
-
-use std::io::{Read, Result, Seek, SeekFrom};
 use seekable_reader::SeekableReader;
+/// Real world example of seek and read operations obtained through an observer and rodio-rs
+use std::io::{Read, Result, Seek, SeekFrom};
 
 /// Read implementation
 struct ExampleRead {
@@ -20,7 +19,7 @@ impl Read for ExampleRead {
 
 #[test]
 fn complex_read_seek() {
-    let reader = ExampleRead {counter: 0};
+    let reader = ExampleRead { counter: 0 };
     let mut reader = SeekableReader::new(reader, 1_048_576);
     let mut buf = vec![0; 2048];
     reader.seek(SeekFrom::Current(0)).unwrap();

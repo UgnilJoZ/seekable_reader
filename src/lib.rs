@@ -1,11 +1,11 @@
 ///
 /// This crate introduces the **SeekableReader**, which provides `Seek` if wrapped around a `Read` instance.
-/// 
+///
 /// An example:
 ///  ```
 /// use std::io::{Read, Seek, SeekFrom};
 /// use seekable_reader::SeekableReader;
-/// 
+///
 /// let source = vec![1, 2, 3, 4, 5];
 /// let mut reader = SeekableReader::new(source.as_slice(), 1);
 /// let mut buffer = vec![0; 5];
@@ -16,7 +16,6 @@
 /// let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
 /// assert_eq!(&source, &bytes);
 /// ```
-
 use core::cmp::min;
 use std::io::{Read, Result, Seek, SeekFrom};
 use std::mem;
@@ -76,9 +75,9 @@ impl<R: Read> SeekableReader<R> {
     }
 
     /// Reads more data from `inner` into `buf` and puts them into the cache
-    /// 
+    ///
     /// After this operation, the stream position will be at the end of all read data.
-    /// 
+    ///
     /// If buf is long enough, the caches will be flushed.
     fn read_inner(&mut self, buf: &mut [u8]) -> Result<usize> {
         let read_bytes = self.inner.read(buf)?;
@@ -87,7 +86,8 @@ impl<R: Read> SeekableReader<R> {
         if read_bytes >= cache_capacity - self.current_buffer.len() {
             // Flush cache and read everything out of the buffer
             let skip = cache_capacity * (read_bytes % cache_capacity);
-            let (to_older, to_current) = (&buf[skip..]).split_at(min(self.keep_size, buf.len() - skip));
+            let (to_older, to_current) =
+                (&buf[skip..]).split_at(min(self.keep_size, buf.len() - skip));
             self.older_buffer.resize(self.keep_size, 0);
             self.older_buffer.as_mut_slice().copy_from_slice(to_older);
             self.current_buffer.resize(to_current.len(), 0);
@@ -127,7 +127,7 @@ impl<R: Read> SeekableReader<R> {
                 self.pos = Position::FrontBuffer(pos - shift);
             }
         }
-        
+
         if let Position::BackBuffer(pos) = self.pos {
             let shift = min(shift, pos);
             let newpos = self.buffer_begins_at_pos + pos - shift;
@@ -148,7 +148,7 @@ impl<R: Read> SeekableReader<R> {
                 self.pos = Position::BackBuffer(pos + shift);
             }
         }
-        
+
         if let Position::FrontBuffer(pos) = self.pos {
             let remaining_in_front_buffer = self.current_buffer.len() - pos;
             if shift > remaining_in_front_buffer {
@@ -170,7 +170,7 @@ impl<R: Read> SeekableReader<R> {
 ///  ```
 /// use std::io::Read;
 /// use seekable_reader::SeekableReader;
-/// 
+///
 /// let source = vec![1, 2, 3, 4, 5];
 /// let reader = SeekableReader::new(source.as_slice(), 1);
 /// let bytes: Vec<_> = reader.bytes().map(|b| b.unwrap()).collect();
@@ -211,18 +211,22 @@ impl<R: Read> Read for SeekableReader<R> {
     }
 }
 
- impl<R: Read> Seek for SeekableReader<R> {
-     fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
-         let old_position = self.get_stream_position();
-         match pos {
-             SeekFrom::Start(pos) if pos > old_position as u64 => self.seek_forwards(pos as usize - old_position),
-             SeekFrom::Start(pos) => self.seek_backwards(old_position - pos as usize),
-             SeekFrom::End(shift) => self.seek(SeekFrom::Start((old_position as i64 + shift) as u64)),
-             SeekFrom::Current(shift) if shift > 0 => self.seek_forwards(shift as usize),
-             SeekFrom::Current(shift) => self.seek_backwards((-shift) as usize),
-         }
-     }
- }
+impl<R: Read> Seek for SeekableReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        let old_position = self.get_stream_position();
+        match pos {
+            SeekFrom::Start(pos) if pos > old_position as u64 => {
+                self.seek_forwards(pos as usize - old_position)
+            }
+            SeekFrom::Start(pos) => self.seek_backwards(old_position - pos as usize),
+            SeekFrom::End(shift) => {
+                self.seek(SeekFrom::Start((old_position as i64 + shift) as u64))
+            }
+            SeekFrom::Current(shift) if shift > 0 => self.seek_forwards(shift as usize),
+            SeekFrom::Current(shift) => self.seek_backwards((-shift) as usize),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -234,7 +238,7 @@ mod tests {
         let source = vec![1, 2, 3, 4, 5];
         let mut reader = SeekableReader::new(source.as_slice(), 1);
         let mut buffer = [0; 1];
-        let mut dest = vec!();
+        let mut dest = vec![];
         while reader.read(&mut buffer).unwrap() != 0 {
             dest.push(buffer[0]);
         }
@@ -246,7 +250,7 @@ mod tests {
         let source = vec![1, 2, 3, 4, 5];
         let mut reader = SeekableReader::new(source.as_slice(), 2);
         let mut buffer = [0; 1];
-        let mut dest = vec!();
+        let mut dest = vec![];
         while reader.read(&mut buffer).unwrap() != 0 {
             dest.push(buffer[0]);
         }
@@ -277,7 +281,7 @@ mod tests {
         reader.seek_forwards(1).unwrap();
         reader.read(&mut buffer).unwrap();
         dest.push(buffer[0]);
-        assert_eq!(dest, [1,1,3]);
+        assert_eq!(dest, [1, 1, 3]);
     }
 
     #[test]
@@ -299,7 +303,7 @@ mod tests {
         reader.seek_backwards(1).unwrap();
         reader.read(&mut buffer).unwrap();
         dest.push(buffer[0]);
-        assert_eq!(dest, [1,2,1,4,4]);
+        assert_eq!(dest, [1, 2, 1, 4, 4]);
     }
 
     #[test]
