@@ -188,7 +188,7 @@ impl<R: Read> Read for SeekableReader<R> {
                 let (from_cache, from_inner) = buf.split_at_mut(min(cached.len(), buf.len()));
                 from_cache.copy_from_slice(&cached[..from_cache.len()]);
                 self.pos = Position::FrontBuffer(pos + from_cache.len());
-                if from_inner.len() > 0 {
+                if !from_inner.is_empty() {
                     Ok(from_cache.len() + self.read_inner(from_inner)?)
                 } else {
                     Ok(from_cache.len())
@@ -199,7 +199,7 @@ impl<R: Read> Read for SeekableReader<R> {
                 let cached = &cached[..min(cached.len(), buf.len())];
                 let (from_cache, other) = buf.split_at_mut(min(cached.len(), buf.len()));
                 from_cache.copy_from_slice(cached);
-                if other.len() > 0 {
+                if !other.is_empty() {
                     self.pos = Position::FrontBuffer(0);
                     Ok(from_cache.len() + self.read(other)?)
                 } else {
