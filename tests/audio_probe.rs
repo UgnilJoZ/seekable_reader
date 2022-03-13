@@ -18,7 +18,7 @@ impl Read for ExampleRead {
 }
 
 #[test]
-fn complex_read_seek() {
+fn main() {
     let reader = ExampleRead { counter: 0 };
     let mut reader = SeekableReader::new(reader, 1_048_576);
     let mut buf = vec![0; 2048];

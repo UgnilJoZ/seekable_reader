@@ -17,7 +17,7 @@
 /// assert_eq!(&source, &bytes);
 /// ```
 use core::cmp::min;
-use std::io::{Read, Result, Seek, SeekFrom};
+use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom};
 use std::mem;
 
 #[derive(Debug)]
@@ -211,16 +211,31 @@ impl<R: Read> Read for SeekableReader<R> {
     }
 }
 
+const ERR_NEGATIVE_OFFSET: &str = "Request to jump to negative offset";
+const ERR_TOO_FAR_JUMP: &str = "Request to jump further than i64 allows";
+
 impl<R: Read> Seek for SeekableReader<R> {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
         let old_position = self.get_stream_position();
         match pos {
-            SeekFrom::Start(pos) if pos > old_position as u64 => {
-                self.seek_forwards(pos as usize - old_position)
+            SeekFrom::Start(pos) => {
+                let pos = pos as usize;
+                if let Some(diff) = pos.checked_sub(old_position) {
+                    self.seek_forwards(diff)
+                } else {
+                    old_position
+                        .checked_sub(pos)
+                        .ok_or_else(|| Error::new(ErrorKind::Other, ERR_NEGATIVE_OFFSET))
+                        .and_then(|new_position| self.seek_backwards(new_position))
+                }
             }
-            SeekFrom::Start(pos) => self.seek_backwards(old_position - pos as usize),
-            SeekFrom::End(shift) => {
-                self.seek(SeekFrom::Start((old_position as i64 + shift) as u64))
+            SeekFrom::End(end_summand) => {
+                let end_distance = i64::try_from(self.remaining_current_buffer_capacity())
+                    .map_err(|e| Error::new(ErrorKind::Other, e))?;
+                end_distance
+                    .checked_add(end_summand)
+                    .ok_or_else(|| Error::new(ErrorKind::Other, ERR_TOO_FAR_JUMP))
+                    .and_then(|shift| self.seek(SeekFrom::Current(shift)))
             }
             SeekFrom::Current(shift) if shift > 0 => self.seek_forwards(shift as usize),
             SeekFrom::Current(shift) => self.seek_backwards((-shift) as usize),
