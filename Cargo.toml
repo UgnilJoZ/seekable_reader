@@ -1,11 +1,11 @@
 [package]
 name = "seekable_reader"
 version = "0.1.2"
-edition = "2021"
+edition = "2024"
 authors = ["Jan Ole Zabel <joz@spline.de>"]
 license = "MIT OR Apache-2.0"
 documentation = "http://docs.rs/seekable_reader"
 repository = "https://github.com/UgnilJoZ/seekable_reader"
-description = "Seek implementation for every Read"
+description = "Transform every Read into a seekable resource"
 
 [dependencies]

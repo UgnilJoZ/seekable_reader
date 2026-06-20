@@ -20,6 +20,9 @@ use core::cmp::min;
 use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom};
 use std::mem;
 
+const ERR_SUBTRACT_BUFFER_POS: &str = "subtracting buffer position from keep_size";
+const ERR_BUFFER_SIZE_ABOVE_USIZE: &str = "adding the two buffer sizes";
+
 #[derive(Debug)]
 enum Position {
     FrontBuffer(usize),
@@ -66,6 +69,25 @@ impl<R: Read> SeekableReader<R> {
     // Returns the number of bytes which can be read from inner before the next buffer swap.
     fn remaining_current_buffer_capacity(&self) -> usize {
         self.keep_size - self.current_buffer.len()
+    }
+
+    /// Returns the number of cached bytes available after the cursor
+    ///
+    /// Panics if position is above keep_size or 2*keep_size is above the usize maximum.
+    fn remaining_cached_size(&self) -> usize {
+        match self.pos {
+            Position::FrontBuffer(pos) => self
+                .keep_size
+                .checked_sub(pos)
+                .expect(ERR_SUBTRACT_BUFFER_POS),
+            Position::BackBuffer(pos) => self
+                .older_buffer
+                .len()
+                .checked_sub(pos)
+                .expect(ERR_SUBTRACT_BUFFER_POS)
+                .checked_add(self.current_buffer.len())
+                .expect(ERR_BUFFER_SIZE_ABOVE_USIZE),
+        }
     }
 
     /// Returns the size of the buffered data.
@@ -226,11 +248,11 @@ impl<R: Read> Seek for SeekableReader<R> {
                     old_position
                         .checked_sub(pos)
                         .ok_or_else(|| Error::new(ErrorKind::Other, ERR_NEGATIVE_OFFSET))
-                        .and_then(|new_position| self.seek_backwards(new_position))
+                        .and_then(|shift| self.seek_backwards(shift))
                 }
             }
             SeekFrom::End(end_summand) => {
-                let end_distance = i64::try_from(self.remaining_current_buffer_capacity())
+                let end_distance = i64::try_from(self.remaining_cached_size())
                     .map_err(|e| Error::new(ErrorKind::Other, e))?;
                 end_distance
                     .checked_add(end_summand)
