@@ -52,6 +52,60 @@ impl std::fmt::Display for SeekError {
 impl std::error::Error for SeekError {}
 
 #[derive(Debug)]
+pub enum TrySeekError {
+    Seek(SeekError),
+    Io(Error),
+}
+
+impl std::fmt::Display for TrySeekError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TrySeekError::Seek(err) => err.fmt(f),
+            TrySeekError::Io(err) => err.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for TrySeekError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            TrySeekError::Seek(err) => Some(err),
+            TrySeekError::Io(err) => Some(err),
+        }
+    }
+}
+
+fn split_seek_io_error(err: Error) -> TrySeekError {
+    let kind = err.kind();
+    match err.into_inner() {
+        Some(inner) => match inner.downcast::<SeekError>() {
+            Ok(seek_err) => TrySeekError::Seek(*seek_err),
+            Err(inner) => TrySeekError::Io(Error::new(kind, inner)),
+        },
+        None => TrySeekError::Io(Error::new(kind, "seek failed")),
+    }
+}
+
+fn into_io_seek_error(err: TrySeekError) -> Error {
+    match err {
+        TrySeekError::Seek(SeekError::RewindTooFar {
+            requested,
+            earliest_possible,
+        }) => Error::new(
+            ErrorKind::InvalidInput,
+            SeekError::RewindTooFar {
+                requested,
+                earliest_possible,
+            },
+        ),
+        TrySeekError::Seek(SeekError::SeekFromEndUnsupported) => {
+            Error::new(ErrorKind::Unsupported, SeekError::SeekFromEndUnsupported)
+        }
+        TrySeekError::Io(err) => err,
+    }
+}
+
+#[derive(Debug)]
 enum Position {
     FrontBuffer(usize),
     BackBuffer(usize),
@@ -217,6 +271,31 @@ impl<R: Read> SeekableReader<R> {
 
         Ok(self.get_stream_position() as u64)
     }
+
+    /// Seek with typed errors
+    ///
+    /// Unlike `Seek::seek`, this distinguishes `SeekError` from I/O failures.
+    pub fn try_seek(&mut self, pos: SeekFrom) -> std::result::Result<u64, TrySeekError> {
+        let old_position = self.get_stream_position();
+        match pos {
+            SeekFrom::Start(pos) => {
+                let pos = pos as usize;
+                if let Some(diff) = pos.checked_sub(old_position) {
+                    self.seek_forwards(diff).map_err(split_seek_io_error)
+                } else {
+                    self.seek_backwards(old_position - pos)
+                        .map_err(split_seek_io_error)
+                }
+            }
+            SeekFrom::End(_) => Err(TrySeekError::Seek(SeekError::SeekFromEndUnsupported)),
+            SeekFrom::Current(shift) if shift > 0 => self
+                .seek_forwards(shift as usize)
+                .map_err(split_seek_io_error),
+            SeekFrom::Current(shift) => self
+                .seek_backwards((-shift) as usize)
+                .map_err(split_seek_io_error),
+        }
+    }
 }
 
 /// A SeekableReader can be read just normally:
@@ -266,29 +345,13 @@ impl<R: Read> Read for SeekableReader<R> {
 
 impl<R: Read> Seek for SeekableReader<R> {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
-        let old_position = self.get_stream_position();
-        match pos {
-            SeekFrom::Start(pos) => {
-                let pos = pos as usize;
-                if let Some(diff) = pos.checked_sub(old_position) {
-                    self.seek_forwards(diff)
-                } else {
-                    self.seek_backwards(old_position - pos)
-                }
-            }
-            SeekFrom::End(_) => Err(Error::new(
-                ErrorKind::Unsupported,
-                SeekError::SeekFromEndUnsupported,
-            )),
-            SeekFrom::Current(shift) if shift > 0 => self.seek_forwards(shift as usize),
-            SeekFrom::Current(shift) => self.seek_backwards((-shift) as usize),
-        }
+        self.try_seek(pos).map_err(into_io_seek_error)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{SeekError, SeekableReader};
+    use crate::{SeekError, SeekableReader, TrySeekError};
     use std::io::{Read, Seek, SeekFrom};
 
     #[derive(Debug)]
@@ -316,6 +379,15 @@ mod tests {
             buf[..n].copy_from_slice(&remaining[..n]);
             self.pos += n;
             Ok(n)
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("injected read failure"))
         }
     }
 
@@ -536,6 +608,28 @@ mod tests {
         let mut buf = [0; 1];
         assert_eq!(reader.read(&mut buf).unwrap(), 0);
         assert_eq!(buf[0], 0);
+    }
+
+    #[test]
+    fn try_seek_returns_typed_seek_error() {
+        let source = [1, 2, 3].as_slice();
+        let mut reader = SeekableReader::new(source, 1);
+        reader.seek(SeekFrom::Current(3)).unwrap();
+        let err = reader.try_seek(SeekFrom::Start(0)).unwrap_err();
+        assert!(matches!(
+            err,
+            TrySeekError::Seek(SeekError::RewindTooFar {
+                requested: 0,
+                earliest_possible: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn try_seek_propagates_io_errors() {
+        let mut reader = SeekableReader::new(FailingReader, 2);
+        let err = reader.try_seek(SeekFrom::Current(1)).unwrap_err();
+        assert!(matches!(err, TrySeekError::Io(_)));
     }
 
     #[test]
