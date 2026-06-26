@@ -20,7 +20,6 @@ use core::cmp::min;
 use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom};
 use std::mem;
 
-
 #[derive(Debug)]
 pub enum SeekError {
     /// Tried to seek backwards past the oldest buffered position.
@@ -35,7 +34,10 @@ pub enum SeekError {
 impl std::fmt::Display for SeekError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SeekError::RewindTooFar { requested, earliest_possible } => write!(
+            SeekError::RewindTooFar {
+                requested,
+                earliest_possible,
+            } => write!(
                 f,
                 "cannot seek to position {requested}: earliest buffered position is {earliest_possible}"
             ),
@@ -286,8 +288,36 @@ impl<R: Read> Seek for SeekableReader<R> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{SeekableReader, SeekError};
+    use crate::{SeekError, SeekableReader};
     use std::io::{Read, Seek, SeekFrom};
+
+    #[derive(Debug)]
+    struct CountingReader {
+        data: Vec<u8>,
+        pos: usize,
+        reads: usize,
+    }
+
+    impl CountingReader {
+        fn new(data: Vec<u8>) -> Self {
+            Self {
+                data,
+                pos: 0,
+                reads: 0,
+            }
+        }
+    }
+
+    impl Read for CountingReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            let remaining = &self.data[self.pos..];
+            let n = remaining.len().min(buf.len());
+            buf[..n].copy_from_slice(&remaining[..n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
 
     #[test]
     fn readthrough_1byte_reserve() {
@@ -396,6 +426,13 @@ mod tests {
         let mut reader = SeekableReader::new(source, 2);
         let err = reader.seek(SeekFrom::Current(-1)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(matches!(
+            *err.into_inner().unwrap().downcast::<SeekError>().unwrap(),
+            SeekError::RewindTooFar {
+                requested: 0,
+                earliest_possible: 0
+            }
+        ));
     }
 
     #[test]
@@ -417,8 +454,16 @@ mod tests {
         let mut reader = SeekableReader::new(source, 1);
         reader.seek(SeekFrom::Current(3)).unwrap();
         // Only 1 byte buffered (keep_size=1), seeking back 3 bytes must fail.
+        // buffer_begins_at_pos=2, so earliest reachable position is 2, not 0.
         let err = reader.rewind().unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(matches!(
+            *err.into_inner().unwrap().downcast::<SeekError>().unwrap(),
+            SeekError::RewindTooFar {
+                requested: 0,
+                earliest_possible: 2
+            }
+        ));
     }
 
     #[test]
@@ -442,6 +487,48 @@ mod tests {
     }
 
     #[test]
+    fn seek_forwards_within_back_buffer() {
+        // Covers the branch: seek_forwards from BackBuffer with shift < remaining,
+        // i.e. the cursor stays inside older_buffer without crossing into current_buffer.
+        let source = [1, 2, 3, 4, 5].as_slice();
+        let mut reader = SeekableReader::new(source, 5);
+        reader.seek(SeekFrom::Current(5)).unwrap(); // read all → older=[1..5], FrontBuffer(0)
+        reader.seek(SeekFrom::Start(0)).unwrap(); // → BackBuffer(0)
+        reader.seek(SeekFrom::Current(1)).unwrap(); // shift=1 < remaining=5 → BackBuffer(1)
+        let mut buf = [0; 1];
+        assert_eq!(reader.read(&mut buf).unwrap(), 1);
+        assert_eq!(buf[0], 2); // stream position 1 = value 2
+    }
+
+    #[test]
+    fn read_after_flush_caches_tail() {
+        // Covers the flush branch of read_inner: when a single read fills more than
+        // 2*keep_size bytes, only the tail is kept. Verifies the cached byte is correct.
+        let source = [1, 2, 3].as_slice();
+        let mut reader = SeekableReader::new(source, 1); // cache_capacity = 2
+        let mut buf = [0; 3];
+        assert_eq!(reader.read(&mut buf).unwrap(), 3); // triggers flush: older=[3], pos=3
+        assert_eq!(buf, [1, 2, 3]);
+        // Only byte at position 2 (=3) remains in cache; one step back must succeed.
+        reader.seek(SeekFrom::Current(-1)).unwrap();
+        let mut buf = [0; 1];
+        assert_eq!(reader.read(&mut buf).unwrap(), 1);
+        assert_eq!(buf[0], 3);
+    }
+
+    #[test]
+    fn seek_start_forwards() {
+        // Covers SeekFrom::Start where target > current position (forwards path).
+        let source = [1, 2, 3, 4, 5].as_slice();
+        let mut reader = SeekableReader::new(source, 5);
+        let pos = reader.seek(SeekFrom::Start(3)).unwrap();
+        assert_eq!(pos, 3);
+        let mut buf = [0; 1];
+        assert_eq!(reader.read(&mut buf).unwrap(), 1);
+        assert_eq!(buf[0], 4); // stream position 3 = value 4
+    }
+
+    #[test]
     fn seek_forwards_too_far() {
         let source = [1, 2, 3].as_slice();
         let mut reader = SeekableReader::new(source, 2);
@@ -449,5 +536,60 @@ mod tests {
         let mut buf = [0; 1];
         assert_eq!(reader.read(&mut buf).unwrap(), 0);
         assert_eq!(buf[0], 0);
+    }
+
+    #[test]
+    fn seek_current_zero_is_noop() {
+        let source = [1, 2, 3].as_slice();
+        let mut reader = SeekableReader::new(source, 2);
+        reader.seek(SeekFrom::Current(1)).unwrap();
+        let before = reader.get_stream_position();
+        let pos = reader.seek(SeekFrom::Current(0)).unwrap();
+        assert_eq!(pos as usize, before);
+        let mut buf = [0; 1];
+        assert_eq!(reader.read(&mut buf).unwrap(), 1);
+        assert_eq!(buf[0], 2);
+    }
+
+    #[test]
+    fn seek_forwards_backbuffer_equal_remaining_boundary() {
+        let source = [1, 2, 3, 4, 5].as_slice();
+        let mut reader = SeekableReader::new(source, 5);
+        reader.seek(SeekFrom::Current(5)).unwrap();
+        reader.seek(SeekFrom::Start(0)).unwrap();
+        let pos = reader.seek(SeekFrom::Current(5)).unwrap();
+        assert_eq!(pos, 5);
+        assert!(matches!(reader.pos, super::Position::FrontBuffer(0)));
+    }
+
+    #[test]
+    fn seek_forwards_frontbuffer_equal_remaining_boundary() {
+        let inner = CountingReader::new(vec![1, 2, 3, 4]);
+        let mut reader = SeekableReader::new(inner, 4);
+
+        let mut buf = [0; 3];
+        assert_eq!(reader.read(&mut buf).unwrap(), 3);
+        assert_eq!(buf, [1, 2, 3]);
+
+        reader.seek(SeekFrom::Current(-2)).unwrap();
+        let reads_before = reader.inner.reads;
+        // FrontBuffer remaining is exactly 2 here, so this should not trigger read_inner.
+        let pos = reader.seek(SeekFrom::Current(2)).unwrap();
+        assert_eq!(pos, 3);
+        assert_eq!(reader.inner.reads, reads_before);
+    }
+
+    #[test]
+    fn read_inner_flush_equality_boundary() {
+        // keep_size=1 -> cache_capacity=2, reading 2 bytes from empty current_buffer
+        // hits the exact equality branch: read_bytes == cache_capacity - current.len().
+        let source = [10, 11].as_slice();
+        let mut reader = SeekableReader::new(source, 1);
+        let mut buf = [0; 2];
+        assert_eq!(reader.read(&mut buf).unwrap(), 2);
+        assert_eq!(buf, [10, 11]);
+        assert_eq!(reader.buffer_begins_at_pos, 1);
+        assert_eq!(reader.older_buffer, vec![11]);
+        assert_eq!(reader.current_buffer.len(), 0);
     }
 }
