@@ -171,7 +171,7 @@ impl<R: Read> SeekableReader<R> {
             // Flush cache: keep only the tail of what was just read.
             let skip = cache_capacity * (read_bytes % cache_capacity);
             let (to_older, to_current) =
-                (&buf[skip..]).split_at(min(self.keep_size, buf.len() - skip));
+                buf[skip..].split_at(min(self.keep_size, buf.len() - skip));
             let old_total = self.older_buffer.len() + self.current_buffer.len();
             self.older_buffer.resize(self.keep_size, 0);
             self.older_buffer.as_mut_slice().copy_from_slice(to_older);
@@ -420,7 +420,7 @@ mod tests {
         let source = vec![1, 2, 3, 4, 5];
         let mut reader = SeekableReader::new(source.as_slice(), 5);
         let mut dest = [0; 5];
-        reader.read(&mut dest).unwrap();
+        reader.read_exact(&mut dest).unwrap();
         assert_eq!(reader.older_buffer.len(), 5);
         assert_eq!(reader.current_buffer.len(), 0);
     }
@@ -431,13 +431,13 @@ mod tests {
         let mut reader = SeekableReader::new(source.as_slice(), 1);
         let mut dest = vec![];
         let mut buffer = [0; 1];
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         dest.push(buffer[0]);
         reader.seek_backwards(1).unwrap();
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         dest.push(buffer[0]);
         reader.seek_forwards(1).unwrap();
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         dest.push(buffer[0]);
         assert_eq!(dest, [1, 1, 3]);
     }
@@ -448,18 +448,18 @@ mod tests {
         let mut reader = SeekableReader::new(source.as_slice(), 2);
         let mut dest = vec![];
         let mut buffer = [0; 1];
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         dest.push(buffer[0]);
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         dest.push(buffer[0]);
         reader.seek_backwards(2).unwrap();
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         dest.push(buffer[0]);
         reader.seek_forwards(2).unwrap();
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         dest.push(buffer[0]);
         reader.seek_backwards(1).unwrap();
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         dest.push(buffer[0]);
         assert_eq!(dest, [1, 2, 1, 4, 4]);
     }
@@ -469,18 +469,18 @@ mod tests {
         let source: Vec<u8> = (0..1536).map(|n| (n % 256) as u8).collect();
         let mut reader = SeekableReader::new(source.as_slice(), 1024);
         let mut buffer = [0; 1536];
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         assert_eq!(source.len(), buffer.len());
         assert_eq!(source, buffer);
         reader.seek(SeekFrom::Start(0)).unwrap();
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         assert_eq!(source, buffer);
         reader.seek(SeekFrom::Current(-1024)).unwrap();
         reader.seek(SeekFrom::Current(-512)).unwrap();
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         assert_eq!(source, buffer);
         reader.seek(SeekFrom::Start(0)).unwrap();
-        reader.read(&mut buffer).unwrap();
+        reader.read_exact(&mut buffer).unwrap();
         assert_eq!(source, buffer);
     }
 
@@ -637,9 +637,9 @@ mod tests {
         let source = [1, 2, 3].as_slice();
         let mut reader = SeekableReader::new(source, 2);
         reader.seek(SeekFrom::Current(1)).unwrap();
-        let before = reader.get_stream_position();
-        let pos = reader.seek(SeekFrom::Current(0)).unwrap();
-        assert_eq!(pos as usize, before);
+        let before = reader.stream_position().unwrap();
+        let pos = reader.try_seek(SeekFrom::Current(0)).unwrap();
+        assert_eq!(pos, before);
         let mut buf = [0; 1];
         assert_eq!(reader.read(&mut buf).unwrap(), 1);
         assert_eq!(buf[0], 2);
