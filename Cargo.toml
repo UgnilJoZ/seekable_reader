@@ -2,10 +2,13 @@
 name = "seekable_reader"
 version = "0.1.2"
 edition = "2024"
+rust-version = "1.85.1"
 authors = ["Jan Ole Zabel <joz@spline.de>"]
 license = "MIT OR Apache-2.0"
-documentation = "http://docs.rs/seekable_reader"
+documentation = "https://docs.rs/seekable_reader"
 repository = "https://github.com/UgnilJoZ/seekable_reader"
 description = "Transform every Read into a seekable resource"
+keywords = ["seek", "read", "buffer", "cache"]
+categories = ["caching", "rust-patterns"]
 
 [dependencies]
