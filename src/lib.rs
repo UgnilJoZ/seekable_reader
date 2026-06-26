@@ -20,8 +20,34 @@ use core::cmp::min;
 use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom};
 use std::mem;
 
-const ERR_SUBTRACT_BUFFER_POS: &str = "subtracting buffer position from keep_size";
-const ERR_BUFFER_SIZE_ABOVE_USIZE: &str = "adding the two buffer sizes";
+
+#[derive(Debug)]
+pub enum SeekError {
+    /// Tried to seek backwards past the oldest buffered position.
+    RewindTooFar {
+        requested: u64,
+        earliest_possible: u64,
+    },
+    /// `SeekFrom::End` requires a known stream length and is not supported.
+    SeekFromEndUnsupported,
+}
+
+impl std::fmt::Display for SeekError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SeekError::RewindTooFar { requested, earliest_possible } => write!(
+                f,
+                "cannot seek to position {requested}: earliest buffered position is {earliest_possible}"
+            ),
+            SeekError::SeekFromEndUnsupported => write!(
+                f,
+                "SeekFrom::End is not supported for streams with unknown length"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SeekError {}
 
 #[derive(Debug)]
 enum Position {
@@ -37,7 +63,6 @@ enum Position {
 pub struct SeekableReader<R: Read> {
     pub inner: R,
     pub keep_size: usize,
-    // TODO migrate to arrayvec
     current_buffer: Vec<u8>,
     older_buffer: Vec<u8>,
     pos: Position,
@@ -71,25 +96,6 @@ impl<R: Read> SeekableReader<R> {
         self.keep_size - self.current_buffer.len()
     }
 
-    /// Returns the number of cached bytes available after the cursor
-    ///
-    /// Panics if position is above keep_size or 2*keep_size is above the usize maximum.
-    fn remaining_cached_size(&self) -> usize {
-        match self.pos {
-            Position::FrontBuffer(pos) => self
-                .keep_size
-                .checked_sub(pos)
-                .expect(ERR_SUBTRACT_BUFFER_POS),
-            Position::BackBuffer(pos) => self
-                .older_buffer
-                .len()
-                .checked_sub(pos)
-                .expect(ERR_SUBTRACT_BUFFER_POS)
-                .checked_add(self.current_buffer.len())
-                .expect(ERR_BUFFER_SIZE_ABOVE_USIZE),
-        }
-    }
-
     /// Returns the size of the buffered data.
     /// Attempts to seek further back will result an Error.
     pub fn buffered_size(&self) -> usize {
@@ -106,27 +112,33 @@ impl<R: Read> SeekableReader<R> {
         let buf = &mut buf[..read_bytes];
         let cache_capacity = 2 * self.keep_size;
         if read_bytes >= cache_capacity - self.current_buffer.len() {
-            // Flush cache and read everything out of the buffer
+            // Flush cache: keep only the tail of what was just read.
             let skip = cache_capacity * (read_bytes % cache_capacity);
             let (to_older, to_current) =
                 (&buf[skip..]).split_at(min(self.keep_size, buf.len() - skip));
+            let old_total = self.older_buffer.len() + self.current_buffer.len();
             self.older_buffer.resize(self.keep_size, 0);
             self.older_buffer.as_mut_slice().copy_from_slice(to_older);
             self.current_buffer.resize(to_current.len(), 0);
             self.current_buffer.copy_from_slice(to_current);
+            self.buffer_begins_at_pos += old_total + skip;
         } else if read_bytes > self.remaining_current_buffer_capacity() {
             let to_older_size = self.remaining_current_buffer_capacity();
+            let old_older_len = self.older_buffer.len();
             mem::swap(&mut self.older_buffer, &mut self.current_buffer);
             let (to_older, to_current) = buf.split_at(min(to_older_size, buf.len()));
             self.older_buffer.extend_from_slice(to_older);
             self.current_buffer.resize(to_current.len(), 0);
             self.current_buffer.copy_from_slice(to_current);
+            self.buffer_begins_at_pos += old_older_len;
         } else {
             self.current_buffer.extend_from_slice(buf);
         }
         if self.current_buffer.len() == self.keep_size {
+            let old_older_len = self.older_buffer.len();
             mem::swap(&mut self.older_buffer, &mut self.current_buffer);
             self.current_buffer.clear();
+            self.buffer_begins_at_pos += old_older_len;
         }
         self.pos = Position::FrontBuffer(self.current_buffer.len());
         Ok(read_bytes)
@@ -139,7 +151,25 @@ impl<R: Read> SeekableReader<R> {
         }
     }
 
+    /// Returns how many bytes the cursor can be moved backwards within the cache.
+    pub fn max_rewind(&self) -> usize {
+        match self.pos {
+            Position::FrontBuffer(pos) => self.older_buffer.len() + pos,
+            Position::BackBuffer(pos) => pos,
+        }
+    }
+
     fn seek_backwards(&mut self, shift: usize) -> Result<u64> {
+        if shift > self.max_rewind() {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                SeekError::RewindTooFar {
+                    requested: self.get_stream_position().saturating_sub(shift) as u64,
+                    earliest_possible: self.buffer_begins_at_pos as u64,
+                },
+            ));
+        }
+
         let mut shift = shift;
         if let Position::FrontBuffer(pos) = self.pos {
             if shift > pos {
@@ -147,13 +177,12 @@ impl<R: Read> SeekableReader<R> {
                 shift -= pos + 1;
             } else {
                 self.pos = Position::FrontBuffer(pos - shift);
+                return Ok(self.get_stream_position() as u64);
             }
         }
 
         if let Position::BackBuffer(pos) = self.pos {
-            let shift = min(shift, pos);
-            let newpos = self.buffer_begins_at_pos + pos - shift;
-            self.pos = Position::BackBuffer(newpos);
+            self.pos = Position::BackBuffer(pos - shift);
         }
 
         Ok(self.get_stream_position() as u64)
@@ -233,9 +262,6 @@ impl<R: Read> Read for SeekableReader<R> {
     }
 }
 
-const ERR_NEGATIVE_OFFSET: &str = "Request to jump to negative offset";
-const ERR_TOO_FAR_JUMP: &str = "Request to jump further than i64 allows";
-
 impl<R: Read> Seek for SeekableReader<R> {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
         let old_position = self.get_stream_position();
@@ -245,20 +271,13 @@ impl<R: Read> Seek for SeekableReader<R> {
                 if let Some(diff) = pos.checked_sub(old_position) {
                     self.seek_forwards(diff)
                 } else {
-                    old_position
-                        .checked_sub(pos)
-                        .ok_or_else(|| Error::new(ErrorKind::Other, ERR_NEGATIVE_OFFSET))
-                        .and_then(|shift| self.seek_backwards(shift))
+                    self.seek_backwards(old_position - pos)
                 }
             }
-            SeekFrom::End(end_summand) => {
-                let end_distance = i64::try_from(self.remaining_cached_size())
-                    .map_err(|e| Error::new(ErrorKind::Other, e))?;
-                end_distance
-                    .checked_add(end_summand)
-                    .ok_or_else(|| Error::new(ErrorKind::Other, ERR_TOO_FAR_JUMP))
-                    .and_then(|shift| self.seek(SeekFrom::Current(shift)))
-            }
+            SeekFrom::End(_) => Err(Error::new(
+                ErrorKind::Unsupported,
+                SeekError::SeekFromEndUnsupported,
+            )),
             SeekFrom::Current(shift) if shift > 0 => self.seek_forwards(shift as usize),
             SeekFrom::Current(shift) => self.seek_backwards((-shift) as usize),
         }
@@ -267,7 +286,7 @@ impl<R: Read> Seek for SeekableReader<R> {
 
 #[cfg(test)]
 mod tests {
-    use crate::SeekableReader;
+    use crate::{SeekableReader, SeekError};
     use std::io::{Read, Seek, SeekFrom};
 
     #[test]
@@ -358,7 +377,7 @@ mod tests {
         reader.seek(SeekFrom::Current(-512)).unwrap();
         reader.read(&mut buffer).unwrap();
         assert_eq!(source, buffer);
-        reader.seek(SeekFrom::End(-1536)).unwrap();
+        reader.seek(SeekFrom::Start(0)).unwrap();
         reader.read(&mut buffer).unwrap();
         assert_eq!(source, buffer);
     }
@@ -369,5 +388,66 @@ mod tests {
         let mut reader = SeekableReader::new(source.as_slice(), 2048);
         let mut buf = [0; 27];
         assert_eq!(reader.read(&mut buf).unwrap(), 27);
+    }
+
+    #[test]
+    fn seek_into_negative_pos() {
+        let source = [1, 2, 3].as_slice();
+        let mut reader = SeekableReader::new(source, 2);
+        let err = reader.seek(SeekFrom::Current(-1)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn reread_whole_cache() {
+        let source = [1, 2].as_slice();
+        // keep_size=2 so both bytes remain in cache after reading
+        let mut reader = SeekableReader::new(source, 2);
+        reader.seek(SeekFrom::Current(2)).unwrap();
+        reader.rewind().unwrap();
+
+        let mut buf = [0; 1];
+        assert_eq!(reader.read(&mut buf).unwrap(), 1);
+        assert_eq!(buf[0], 1);
+    }
+
+    #[test]
+    fn seek_back_too_far() {
+        let source = [1, 2, 3].as_slice();
+        let mut reader = SeekableReader::new(source, 1);
+        reader.seek(SeekFrom::Current(3)).unwrap();
+        // Only 1 byte buffered (keep_size=1), seeking back 3 bytes must fail.
+        let err = reader.rewind().unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn seek_to_end() {
+        let source = [1, 2, 3].as_slice();
+        let mut reader = SeekableReader::new(source, 2);
+        reader.seek(SeekFrom::Current(3)).unwrap();
+        let mut buf = [0; 1];
+        assert_eq!(reader.read(&mut buf).unwrap(), 0);
+        assert_eq!(buf[0], 0);
+    }
+
+    #[test]
+    fn seek_from_end_unsupported() {
+        let source = [1, 2, 3].as_slice();
+        let mut reader = SeekableReader::new(source, 3);
+        let err = reader.seek(SeekFrom::End(-1)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        let inner = err.into_inner().unwrap();
+        assert!(inner.downcast::<SeekError>().is_ok());
+    }
+
+    #[test]
+    fn seek_forwards_too_far() {
+        let source = [1, 2, 3].as_slice();
+        let mut reader = SeekableReader::new(source, 2);
+        reader.seek(SeekFrom::Current(8)).unwrap();
+        let mut buf = [0; 1];
+        assert_eq!(reader.read(&mut buf).unwrap(), 0);
+        assert_eq!(buf[0], 0);
     }
 }
