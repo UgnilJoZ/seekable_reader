@@ -114,7 +114,7 @@ enum Position {
 /// A reader adapter that allows to seek a little bit
 ///
 /// The SeekableReader will wrap around a Read instance and can be read normally.
-/// The core feature is to provide `Seek`, even if the underlying Reader does not.
+/// The core feature is to provide [`Seek`], even if the underlying Reader does not.
 /// It achieves this by holding a cache of the read data, which can be read again.
 pub struct SeekableReader<R: Read> {
     pub inner: R,
@@ -274,7 +274,7 @@ impl<R: Read> SeekableReader<R> {
 
     /// Seek with typed errors
     ///
-    /// Unlike `Seek::seek`, this distinguishes `SeekError` from I/O failures.
+    /// Unlike [`Seek::seek`], this distinguishes [`SeekError`] from I/O failures.
     pub fn try_seek(&mut self, pos: SeekFrom) -> std::result::Result<u64, TrySeekError> {
         let old_position = self.get_stream_position();
         match pos {
